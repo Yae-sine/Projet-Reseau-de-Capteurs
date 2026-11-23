@@ -1,0 +1,50 @@
+# Headless build (alternative to STM32CubeIDE).
+#   make -f Makefile.cli BOARD=VL      -> build/VL/rescapt.elf / .bin
+#   make -f Makefile.cli BOARD=MPU
+#   make -f Makefile.cli BOARD=ANEMO
+#   make -f Makefile.cli BOARD=VL flash   (needs st-flash or STM32_Programmer_CLI)
+BOARD ?= VL
+CC  ?= arm-none-eabi-gcc
+ifeq ($(origin CC),default)
+CC = arm-none-eabi-gcc
+endif
+OBJCOPY = $(CC:gcc=objcopy)
+SIZE    = $(CC:gcc=size)
+
+ifeq ($(BOARD),VL)
+DEFS = -DVL6180X_PRESS_HUM_TEMP=1 -DMPU9250=0 -DDYN_ANEMO=0
+else ifeq ($(BOARD),MPU)
+DEFS = -DVL6180X_PRESS_HUM_TEMP=0 -DMPU9250=1 -DDYN_ANEMO=0
+else ifeq ($(BOARD),ANEMO)
+DEFS = -DVL6180X_PRESS_HUM_TEMP=0 -DMPU9250=0 -DDYN_ANEMO=1
+else
+$(error BOARD must be VL, MPU or ANEMO)
+endif
+
+OUT = build/$(BOARD)
+SRCS = $(wildcard src/*.c src/vl6180x/*.c HAL_Driver/Src/*.c Utilities/STM32F1xx_Nucleo/*.c)
+SRCS := $(filter-out %template.c,$(SRCS))
+OBJS = $(patsubst %.c,$(OUT)/%.o,$(SRCS)) $(OUT)/startup.o
+CFLAGS = -mcpu=cortex-m3 -mthumb -std=gnu11 -O1 -g -fcommon -ffunction-sections -fdata-sections \
+         -DSTM32F1 -DSTM32F103RBTx -DSTM32F103xB -DUSE_HAL_DRIVER $(DEFS) \
+         -Iinc -Isrc/vl6180x -ICMSIS/core -ICMSIS/device -IHAL_Driver/Inc -IHAL_Driver/Inc/Legacy \
+         -IUtilities/STM32F1xx_Nucleo -w
+LDFLAGS = -mcpu=cortex-m3 -mthumb -TLinkerScript.ld -Wl,--gc-sections -specs=nano.specs -specs=nosys.specs -Wl,-Map=$(OUT)/rescapt.map -lm
+
+all: $(OUT)/rescapt.bin
+$(OUT)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OUT)/startup.o: startup/startup_stm32f103xb.s
+	@mkdir -p $(OUT)
+	$(CC) -mcpu=cortex-m3 -mthumb -c $< -o $@
+$(OUT)/rescapt.elf: $(OBJS)
+	$(CC) $(OBJS) $(LDFLAGS) -o $@
+	$(SIZE) $@
+$(OUT)/rescapt.bin: $(OUT)/rescapt.elf
+	$(OBJCOPY) -O binary $< $@
+flash: $(OUT)/rescapt.bin
+	st-flash --reset write $< 0x08000000 || STM32_Programmer_CLI -c port=SWD -w $< 0x08000000 -rst
+clean:
+	rm -rf build
+.PHONY: all flash clean
